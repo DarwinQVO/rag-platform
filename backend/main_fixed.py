@@ -40,28 +40,131 @@ app.add_middleware(
 # Environment check
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 print(f"✅ OpenAI configured: {bool(OPENAI_API_KEY)}")
 print(f"✅ Gemini configured: {bool(GEMINI_API_KEY)}")
+print(f"✅ Supabase URL configured: {bool(SUPABASE_URL)}")
+print(f"✅ Supabase Key configured: {bool(SUPABASE_KEY)}")
 
-# Simple storage with persistence
+# Storage configuration - use Supabase if available
 STORAGE_FILE = "document_storage.pkl"
+USE_SUPABASE = os.getenv("ENVIRONMENT") == "production" and SUPABASE_URL and SUPABASE_KEY
+
+# Initialize Supabase if available
+supabase_client = None
+if USE_SUPABASE:
+    try:
+        from supabase import create_client
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase connected for persistent storage")
+    except Exception as e:
+        print(f"⚠️ Supabase connection failed: {e}")
+        USE_SUPABASE = False
 
 def load_storage():
+    """Load documents from Supabase or local file"""
+    if USE_SUPABASE and supabase_client:
+        try:
+            result = supabase_client.table('documents').select('*').execute()
+            if hasattr(result, 'data') and result.data:
+                print(f"✅ Loaded {len(result.data)} documents from Supabase")
+                # Convert to the format expected by the app
+                storage = {}
+                for doc in result.data:
+                    doc_id = str(doc.get('id'))
+                    
+                    # Get text from chunks if it exists
+                    text = doc.get('content', '')
+                    if not text:
+                        try:
+                            chunks_result = supabase_client.table('chunks').select('content').eq('document_id', doc.get('id')).execute()
+                            if chunks_result.data:
+                                text = ' '.join([chunk.get('content', '') for chunk in chunks_result.data])
+                        except:
+                            pass
+                    
+                    storage[doc_id] = {
+                        'doc_id': doc_id,
+                        'filename': doc.get('filename', 'Unknown'),
+                        'text': text,
+                        'total_pages': doc.get('pages', 0),
+                        'total_characters': len(text),
+                        'uploaded_at': doc.get('created_at', time.time())
+                    }
+                return storage
+        except Exception as e:
+            print(f"⚠️ Failed to load from Supabase: {e}")
+    
+    # Fallback to local file
     if pathlib.Path(STORAGE_FILE).exists():
         try:
             with open(STORAGE_FILE, 'rb') as f:
-                return pickle.load(f)
+                storage = pickle.load(f)
+                print(f"📁 Loaded {len(storage)} documents from local file")
+                return storage
         except:
             pass
     return {}
 
 def save_storage():
+    """Save to both Supabase and local file"""
     try:
+        # Always save to local file as backup
         with open(STORAGE_FILE, 'wb') as f:
             pickle.dump(document_storage, f)
+        
+        # Also save to Supabase if available
+        if USE_SUPABASE and supabase_client:
+            for doc_id, doc_data in document_storage.items():
+                save_document_to_supabase(doc_data)
+                
     except Exception as e:
         print(f"Error saving storage: {e}")
+
+def save_document_to_supabase(doc_data):
+    """Save individual document to Supabase"""
+    if not (USE_SUPABASE and supabase_client):
+        return False
+    
+    try:
+        # Check if document already exists
+        existing = supabase_client.table('documents').select('id').eq('filename', doc_data['filename']).execute()
+        if existing.data:
+            print(f"📄 Document {doc_data['filename']} already exists in Supabase")
+            return True
+        
+        # Insert new document
+        document_record = {
+            'filename': doc_data['filename'],
+            'pages': doc_data.get('total_pages', 0),
+        }
+        
+        result = supabase_client.table('documents').insert(document_record).execute()
+        if result.data:
+            document_id = result.data[0]['id']
+            
+            # Save text as chunks
+            text = doc_data.get('text', '')
+            if text:
+                chunk_size = 3000
+                chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+                
+                for i, chunk_text in enumerate(chunks):
+                    chunk_record = {
+                        'document_id': document_id,
+                        'content': chunk_text,
+                        'chunk_index': i
+                    }
+                    supabase_client.table('chunks').insert(chunk_record).execute()
+            
+            print(f"✅ Saved {doc_data['filename']} to Supabase with {len(chunks) if text else 0} chunks")
+            return True
+    except Exception as e:
+        print(f"❌ Failed to save {doc_data.get('filename')} to Supabase: {e}")
+    
+    return False
 
 document_storage = load_storage()
 
@@ -238,12 +341,25 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    # Get document count from Supabase if available
+    supabase_docs = 0
+    if USE_SUPABASE and supabase_client:
+        try:
+            result = supabase_client.table('documents').select('id').execute()
+            supabase_docs = len(result.data) if result.data else 0
+        except:
+            pass
+    
     return {
         "status": "healthy",
         "openai_configured": bool(OPENAI_API_KEY),
         "gemini_configured": bool(GEMINI_API_KEY),
+        "supabase_configured": bool(SUPABASE_URL and SUPABASE_KEY),
+        "supabase_connected": bool(USE_SUPABASE and supabase_client),
         "documents_in_storage": len(document_storage),
-        "storage_file_exists": pathlib.Path(STORAGE_FILE).exists()
+        "documents_in_supabase": supabase_docs,
+        "storage_file_exists": pathlib.Path(STORAGE_FILE).exists(),
+        "storage_mode": "supabase" if USE_SUPABASE else "local"
     }
 
 @app.post("/upload")
