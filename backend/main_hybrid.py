@@ -161,6 +161,7 @@ def save_document_to_supabase(doc_data):
             
             # Split text into chunks and save to chunks table
             text = doc_data.get('text', '')
+            chunks = []
             if text:
                 chunk_size = 3000
                 chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
@@ -173,7 +174,7 @@ def save_document_to_supabase(doc_data):
                     }
                     supabase_client.table('chunks').insert(chunk_record).execute()
             
-            print(f"✅ Document saved to Supabase with {len(chunks) if text else 0} chunks")
+            print(f"✅ Document saved to Supabase with {len(chunks)} chunks")
             return True
             
     except Exception as e:
