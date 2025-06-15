@@ -103,22 +103,30 @@ def get_documents_from_supabase():
     for table_name in ['documents', 'document', 'docs']:
         try:
             result = supabase_client.table(table_name).select('*').execute()
-            if result.data:
+            if hasattr(result, 'data') and result.data:
+                print(f"✅ Found {len(result.data)} documents in table '{table_name}'")
                 # Normalize the data structure
                 normalized = []
                 for doc in result.data:
+                    # Handle different possible field names
+                    doc_id = doc.get('doc_id') or doc.get('id') or str(uuid.uuid4())
+                    text = doc.get('text') or doc.get('content') or doc.get('full_text') or ''
+                    
                     normalized.append({
-                        'doc_id': doc.get('doc_id', doc.get('id', str(uuid.uuid4()))),
-                        'filename': doc.get('filename', doc.get('name', 'Unknown')),
-                        'text': doc.get('text', doc.get('content', ''))[:50000],
-                        'total_pages': doc.get('total_pages', doc.get('pages', 0)),
-                        'total_characters': doc.get('total_characters', len(doc.get('text', ''))),
-                        'uploaded_at': doc.get('uploaded_at', doc.get('created_at', datetime.utcnow().isoformat()))
+                        'doc_id': doc_id,
+                        'filename': doc.get('filename') or doc.get('name') or 'Unknown',
+                        'text': text[:50000],  # Limit for safety
+                        'total_pages': doc.get('total_pages') or doc.get('pages') or 0,
+                        'total_characters': doc.get('total_characters') or len(text),
+                        'uploaded_at': doc.get('uploaded_at') or doc.get('created_at') or datetime.utcnow().isoformat()
                     })
                 return normalized
+            else:
+                print(f"⚠️ Table '{table_name}' is empty or has no data attribute")
         except Exception as e:
-            print(f"Failed to read from {table_name}: {e}")
+            print(f"❌ Failed to read from {table_name}: {e}")
     
+    print("⚠️ No documents found in any Supabase table")
     return []
 
 def save_document_to_supabase(doc_data):
@@ -156,15 +164,18 @@ async def root():
 async def health_check():
     doc_count = 0
     supabase_tables = []
+    local_doc_count = len(local_storage)
     
     if USE_PRODUCTION_STORAGE:
         # Count from Supabase
         docs = get_documents_from_supabase()
         doc_count = len(docs)
         supabase_tables = check_supabase_tables()
+        print(f"📊 Health check - Supabase docs: {doc_count}, Local docs: {local_doc_count}")
     else:
         # Count from local storage
-        doc_count = len(local_storage)
+        doc_count = local_doc_count
+        print(f"📊 Health check - Using local storage: {doc_count} docs")
     
     return {
         "status": "healthy",
@@ -173,9 +184,11 @@ async def health_check():
         "supabase_configured": bool(supabase_client),
         "storage_mode": "supabase" if USE_PRODUCTION_STORAGE else "local",
         "documents_in_storage": doc_count,
+        "local_documents": local_doc_count,
         "storage_file_exists": pathlib.Path(STORAGE_FILE).exists(),
         "supabase_tables": supabase_tables,
-        "environment": os.getenv("ENVIRONMENT", "development")
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "use_production_storage": USE_PRODUCTION_STORAGE
     }
 
 @app.post("/upload")
@@ -384,17 +397,26 @@ async def ask_question(doc_id: str, q: str):
                 "Content-Type": "application/json"
             }
             
-            # Use first 4000 chars for context
-            context = doc_text[:4000]
+            # Use first 6000 chars for context
+            context = doc_text[:6000]
+            
+            # Clean the context
+            context = context.replace('\n\n\n', '\n\n').strip()
             
             data = {
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "You are a helpful assistant. Answer questions based on the document content. Be concise and accurate."},
-                    {"role": "user", "content": f"Document content:\n{context}\n\nQuestion: {q}"}
+                    {
+                        "role": "system", 
+                        "content": "You are a helpful assistant analyzing a document. Answer questions based on the document content provided. Be specific and cite relevant parts of the text when possible. If the answer is not in the provided content, say so."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Document content:\n{context}\n\nQuestion: {q}\n\nPlease answer based on the document content above."
+                    }
                 ],
                 "temperature": 0.3,
-                "max_tokens": 500
+                "max_tokens": 1000
             }
             
             response = requests.post(
