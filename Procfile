@@ -1,1 +1,1 @@
-web: python -m uvicorn backend.main_production:app --host 0.0.0.0 --port $PORT
+web: python -m uvicorn backend.main_supabase_simple:app --host 0.0.0.0 --port $PORT
