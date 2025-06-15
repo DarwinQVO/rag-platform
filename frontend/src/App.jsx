@@ -3,7 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Button } from './components/ui/button'
 import { Upload, FileText, Send, Bot, Loader2, Settings, Eye, EyeOff, MessageSquare, Database, BarChart3, Brain, Target, Quote, Users, TrendingUp, Network, CheckCircle2, ChevronRight, Calendar, Hash, Globe, Building2, Home, Menu, X, Bell, Search, Plus, Filter, MoreHorizontal, ArrowRight, Activity, Layers, Trash2, AlertTriangle, Clock, MapPin, Zap as EventIcon, Filter as FilterIcon } from 'lucide-react'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Temporary fix: hardcode the production URL if env var is not working
+const API_URL = import.meta.env.VITE_API_URL || 'https://web-production-2761.up.railway.app'
 
 // Debug: Log the API URL
 console.log('API URL:', API_URL)
