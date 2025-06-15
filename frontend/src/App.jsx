@@ -143,18 +143,29 @@ Provide a detailed answer in English, citing page numbers when possible.`
       })
       
       setUploadProgress(70)
-      const data = await res.json()
       
-      if (res.ok) {
-        setUploadProgress(100)
-        setTimeout(() => {
-          alert(`¡Éxito! Documento procesado: ${data.chunks} fragmentos`)
-          fetchDocs()
-          setUploadProgress(0)
-        }, 500)
-      } else {
-        throw new Error(data.detail || 'Error al cargar')
+      // Check if response is ok before parsing JSON
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error('Upload error:', errorText)
+        throw new Error(`Error ${res.status}: ${errorText || 'Failed to upload'}`)
       }
+      
+      // Try to parse JSON response
+      let data
+      try {
+        data = await res.json()
+      } catch (jsonError) {
+        console.error('JSON parse error:', jsonError)
+        throw new Error('Invalid response from server')
+      }
+      
+      setUploadProgress(100)
+      setTimeout(() => {
+        alert(`¡Éxito! Documento procesado: ${data.pages} páginas, ${data.chunks} fragmentos`)
+        fetchDocs()
+        setUploadProgress(0)
+      }, 500)
     } catch (error) {
       alert(`Error: ${error.message}`)
       setUploadProgress(0)

@@ -180,64 +180,99 @@ async def health_check():
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-    
-    # Read and process PDF
-    pdf_content = await file.read()
-    pdf_reader = PyPDF2.PdfReader(BytesIO(pdf_content))
-    
-    # Extract text
-    text = ""
-    for page_num, page in enumerate(pdf_reader.pages):
-        text += page.extract_text() + f"\n[Page {page_num + 1}]\n"
-    
-    # Create document
-    doc_id = str(uuid.uuid4())
-    doc_data = {
-        "doc_id": doc_id,
-        "filename": file.filename,
-        "text": text,
-        "total_pages": len(pdf_reader.pages),
-        "total_characters": len(text),
-        "uploaded_at": datetime.utcnow().isoformat()
-    }
-    
-    # Save to appropriate storage
-    if USE_PRODUCTION_STORAGE:
-        # Try Supabase first
-        if save_document_to_supabase(doc_data):
-            print(f"Document {doc_id} saved to Supabase")
+    try:
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        
+        print(f"📄 Processing upload: {file.filename}")
+        
+        # Read and process PDF
+        pdf_content = await file.read()
+        pdf_reader = PyPDF2.PdfReader(BytesIO(pdf_content))
+        
+        # Extract text with error handling
+        text = ""
+        total_pages = len(pdf_reader.pages)
+        for page_num, page in enumerate(pdf_reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + f"\n[Page {page_num + 1}]\n"
+            except Exception as e:
+                print(f"⚠️ Error extracting page {page_num + 1}: {e}")
+                continue
+        
+        # Ensure we have some text
+        if not text or len(text.strip()) < 10:
+            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+        
+        # Create document
+        doc_id = str(uuid.uuid4())
+        doc_data = {
+            "doc_id": doc_id,
+            "filename": file.filename,
+            "text": text[:500000],  # Limit to 500k chars for safety
+            "total_pages": total_pages,
+            "total_characters": len(text),
+            "uploaded_at": datetime.utcnow().isoformat()
+        }
+        
+        print(f"📊 Document stats: {total_pages} pages, {len(text)} characters")
+        
+        # Save to appropriate storage
+        saved = False
+        if USE_PRODUCTION_STORAGE:
+            # Try Supabase first
+            if save_document_to_supabase(doc_data):
+                print(f"✅ Document {doc_id} saved to Supabase")
+                saved = True
+            else:
+                # Fallback to local if Supabase fails
+                local_storage[doc_id] = doc_data
+                save_local_storage(local_storage)
+                print(f"💾 Document {doc_id} saved to local storage (Supabase failed)")
+                saved = True
         else:
-            # Fallback to local if Supabase fails
+            # Use local storage
             local_storage[doc_id] = doc_data
             save_local_storage(local_storage)
-            print(f"Document {doc_id} saved to local storage (Supabase failed)")
-    else:
-        # Use local storage
-        local_storage[doc_id] = doc_data
-        save_local_storage(local_storage)
-        print(f"Document {doc_id} saved to local storage")
-    
-    # Process with AI if key available
-    chunks_processed = 0
-    if OPENAI_API_KEY:
-        try:
-            # Simple chunking
-            chunk_size = 3000
-            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-            chunks_processed = len(chunks)
-        except:
-            pass
-    
-    return {
-        "message": "Document uploaded successfully",
-        "doc_id": doc_id,
-        "filename": file.filename,
-        "pages": len(pdf_reader.pages),
-        "chunks": chunks_processed,
-        "storage_mode": "supabase" if USE_PRODUCTION_STORAGE else "local"
-    }
+            print(f"💾 Document {doc_id} saved to local storage")
+            saved = True
+        
+        if not saved:
+            raise HTTPException(status_code=500, detail="Failed to save document")
+        
+        # Process with AI if key available
+        chunks_processed = 0
+        if OPENAI_API_KEY:
+            try:
+                # Simple chunking
+                chunk_size = 3000
+                chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+                chunks_processed = len(chunks)
+            except Exception as e:
+                print(f"⚠️ Chunking error: {e}")
+                chunks_processed = 0
+        
+        response_data = {
+            "message": "Document uploaded successfully",
+            "doc_id": doc_id,
+            "filename": file.filename,
+            "pages": total_pages,
+            "chunks": chunks_processed,
+            "storage_mode": "supabase" if USE_PRODUCTION_STORAGE else "local"
+        }
+        
+        print(f"✅ Upload complete: {response_data}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.get("/documents")
 async def list_documents():
@@ -408,7 +443,14 @@ async def extract_knowledge(doc_id: str):
     if OPENAI_API_KEY:
         try:
             # Use extraction prompt
-            from extraction_prompt_v3 import EXTRACTION_PROMPT_V3
+            try:
+                from extraction_prompt_v3 import EXTRACTION_PROMPT_V3
+            except ImportError:
+                # Fallback prompt if import fails
+                EXTRACTION_PROMPT_V3 = """Extract key information from this text:
+{full_text}
+
+Return JSON with quotes, entities, metrics, and relations."""
             
             headers = {
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
