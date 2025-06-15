@@ -58,30 +58,30 @@ db_pool = None
 if USE_SUPABASE:
     try:
         supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        embeddings = OpenAIEmbeddings(
-            openai_api_key=OPENAI_API_KEY,
-            model="text-embedding-3-small",  # Más eficiente que 3-large
-            dimensions=1536
-        )
         print("✅ Supabase connected for RAG")
-        print("✅ OpenAI embeddings configured")
+        
+        # Initialize embeddings with error handling
+        try:
+            embeddings = OpenAIEmbeddings(
+                openai_api_key=OPENAI_API_KEY,
+                model="text-embedding-3-small"
+            )
+            print("✅ OpenAI embeddings configured")
+        except Exception as embed_error:
+            print(f"⚠️ Embeddings setup failed: {embed_error}")
+            embeddings = None
     except Exception as e:
         print(f"⚠️ RAG setup failed: {e}")
         USE_SUPABASE = False
+        supabase_client = None
+        embeddings = None
 
 async def get_db_pool():
     global db_pool
     if not db_pool and SUPABASE_URL:
-        # Convert Supabase URL to direct PostgreSQL connection
-        # Supabase URL format: https://xxx.supabase.co
-        # PostgreSQL URL: postgresql://postgres:[password]@db.xxx.supabase.co:5432/postgres
-        postgres_url = SUPABASE_URL.replace("https://", "").replace("supabase.co", "supabase.co")
-        db_url = f"postgresql://postgres:{SUPABASE_KEY}@db.{postgres_url}:5432/postgres"
-        try:
-            db_pool = await asyncpg.create_pool(db_url)
-            print("✅ PostgreSQL pool connected")
-        except Exception as e:
-            print(f"⚠️ PostgreSQL pool failed: {e}")
+        # For Railway/production, we might not need direct PostgreSQL pool
+        # Supabase client handles the connection internally
+        print("✅ Skipping PostgreSQL pool - using Supabase client")
     return db_pool
 
 def count_tokens_simple(text: str) -> int:
