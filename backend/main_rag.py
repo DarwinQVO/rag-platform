@@ -62,11 +62,8 @@ if USE_SUPABASE:
         
         # Initialize embeddings with error handling
         try:
-            embeddings = OpenAIEmbeddings(
-                openai_api_key=OPENAI_API_KEY,
-                model="text-embedding-3-small"
-            )
-            print("✅ OpenAI embeddings configured")
+            embeddings = None  # Temporarily disable embeddings
+            print("⚠️ Embeddings temporarily disabled")
         except Exception as embed_error:
             print(f"⚠️ Embeddings setup failed: {embed_error}")
             embeddings = None
