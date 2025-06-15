@@ -5,6 +5,10 @@ import { Upload, FileText, Send, Bot, Loader2, Settings, Eye, EyeOff, MessageSqu
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// Debug: Log the API URL
+console.log('API URL:', API_URL)
+console.log('Environment variables:', import.meta.env)
+
 function App() {
   const [docs, setDocs] = useState([])
   const [selectedDoc, setSelectedDoc] = useState(null)
@@ -118,11 +122,19 @@ Provide a detailed answer in English, citing page numbers when possible.`
 
   const fetchDocs = async () => {
     try {
-      const res = await fetch(`${API_URL}/documents`)
+      const url = `${API_URL}/documents`
+      console.log('Fetching documents from:', url)
+      
+      const res = await fetch(url)
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`)
+      }
+      
       const data = await res.json()
       setDocs(data.documents || data)
     } catch (error) {
       console.error('Error fetching docs:', error)
+      setDocs([]) // Set empty array on error
     }
   }
 
