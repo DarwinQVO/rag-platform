@@ -256,19 +256,25 @@ def clean_and_parse_json(response_text: str) -> Dict:
             "raw_response": response_text[:500] + "..." if len(response_text) > 500 else response_text
         }
 
-async def call_openai_chat(messages: List[Dict], model: str = DEFAULT_MODEL, temperature: float = 0.1) -> str:
-    """Call OpenAI API with proper async handling"""
-    import openai
+def call_openai_chat_sync(messages: List[Dict], model: str = DEFAULT_MODEL, temperature: float = 0.1) -> str:
+    """Call OpenAI API synchronously"""
+    import requests
     
-    client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature
+    }
     
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature
-        )
-        return response.choices[0].message.content
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         print(f"OpenAI API error: {e}")
         raise HTTPException(500, f"AI processing failed: {str(e)}")
@@ -503,7 +509,7 @@ async def ask_question(doc_id: str, q: str):
             }
         ]
         
-        response_text = await call_openai_chat(messages)
+        response_text = call_openai_chat_sync(messages)
         
         return {
             "answer": response_text,
@@ -558,7 +564,7 @@ async def extract_knowledge(doc_id: str):
                     }
                 ]
                 
-                response_text = await call_openai_chat(messages)
+                response_text = call_openai_chat_sync(messages)
                 
                 # Clean and parse response
                 extraction_data = clean_and_parse_json(response_text)
