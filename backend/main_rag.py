@@ -380,21 +380,53 @@ async def upload_pdf(file: UploadFile = File(...)):
         if len(pdf_reader.pages) > MAX_PAGES:
             raise HTTPException(400, f"PDF too long (max {MAX_PAGES} pages)")
         
-        # Extract text with page tracking
+        # Extract text with page tracking and multiple methods
         text_parts = []
+        total_extracted_chars = 0
+        
         for i, page in enumerate(pdf_reader.pages):
             try:
+                # Try standard extraction first
                 page_text = page.extract_text()
-                if page_text.strip():
-                    text_parts.append(f"[PAGE {i+1}]\n{page_text}")
+                
+                # If that fails, try alternative method
+                if not page_text or len(page_text.strip()) < 10:
+                    try:
+                        # Alternative extraction method
+                        page_text = page.extract_text(extraction_mode="layout")
+                    except:
+                        pass
+                
+                # If still no text, try raw extraction
+                if not page_text or len(page_text.strip()) < 10:
+                    try:
+                        if hasattr(page, 'get_contents'):
+                            content = page.get_contents()
+                            if content:
+                                page_text = str(content)[:1000]  # Limit raw content
+                    except:
+                        pass
+                
+                if page_text and page_text.strip():
+                    clean_text = page_text.strip()
+                    text_parts.append(f"[PAGE {i+1}]\n{clean_text}")
+                    total_extracted_chars += len(clean_text)
+                    print(f"📄 Page {i+1}: {len(clean_text)} chars extracted")
+                else:
+                    print(f"⚠️ Page {i+1}: No text extracted (possibly image-based)")
+                    
             except Exception as e:
-                print(f"Warning: Could not extract text from page {i+1}: {e}")
+                print(f"❌ Error extracting from page {i+1}: {e}")
                 continue
         
-        if not text_parts:
-            raise HTTPException(400, "Could not extract any text from PDF")
+        print(f"📊 Total extraction: {len(text_parts)} pages with text, {total_extracted_chars} total characters")
         
-        full_text = "\n\n".join(text_parts)
+        if not text_parts:
+            # If no text extracted, create a placeholder
+            print("⚠️ No text extracted from PDF - possibly image-based or encrypted")
+            full_text = f"[DOCUMENT: {file.filename}]\n[PAGES: {len(pdf_reader.pages)}]\n[NOTE: This appears to be an image-based PDF. Text extraction was not possible with standard methods.]"
+        else:
+            full_text = "\n\n".join(text_parts)
         doc_id = file.filename.replace('.pdf', '').replace(' ', '_')
         
         # Store in Supabase if available
