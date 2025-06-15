@@ -19,15 +19,13 @@ app = FastAPI(title="RAG Platform API", version="2.0")
 origins = [
     "http://localhost:5173",  # Local development
     "http://localhost:3000",  # Alternative local port
-    "https://*.vercel.app",   # Vercel deployments
+    "https://rag-platform-three.vercel.app",  # Specific Vercel deployment
+    "https://*.vercel.app",   # Other Vercel deployments
     "https://*.netlify.app",  # Netlify deployments
 ]
 
-# Allow all origins in development, specific ones in production
-if os.getenv("ENVIRONMENT") == "production":
-    cors_origins = origins
-else:
-    cors_origins = ["*"]
+# Temporarily allow all origins to fix CORS issue
+cors_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
