@@ -99,56 +99,85 @@ def get_documents_from_supabase():
     if not supabase_client:
         return []
     
-    # Try different table names
-    for table_name in ['documents', 'document', 'docs']:
-        try:
-            result = supabase_client.table(table_name).select('*').execute()
-            if hasattr(result, 'data') and result.data:
-                print(f"✅ Found {len(result.data)} documents in table '{table_name}'")
-                # Normalize the data structure
-                normalized = []
-                for doc in result.data:
-                    # Handle different possible field names
-                    doc_id = doc.get('doc_id') or doc.get('id') or str(uuid.uuid4())
-                    text = doc.get('text') or doc.get('content') or doc.get('full_text') or ''
-                    
-                    normalized.append({
-                        'doc_id': doc_id,
-                        'filename': doc.get('filename') or doc.get('name') or 'Unknown',
-                        'text': text[:50000],  # Limit for safety
-                        'total_pages': doc.get('total_pages') or doc.get('pages') or 0,
-                        'total_characters': doc.get('total_characters') or len(text),
-                        'uploaded_at': doc.get('uploaded_at') or doc.get('created_at') or datetime.utcnow().isoformat()
-                    })
-                return normalized
-            else:
-                print(f"⚠️ Table '{table_name}' is empty or has no data attribute")
-        except Exception as e:
-            print(f"❌ Failed to read from {table_name}: {e}")
+    # Try your actual table name first
+    table_name = 'documents'
+    try:
+        result = supabase_client.table(table_name).select('*').execute()
+        if hasattr(result, 'data') and result.data:
+            print(f"✅ Found {len(result.data)} documents in table '{table_name}'")
+            # Normalize the data structure for your schema
+            normalized = []
+            for doc in result.data:
+                # Handle your actual field names
+                doc_id = doc.get('id') or doc.get('doc_id') or str(uuid.uuid4())
+                
+                # Get text from chunks table if needed
+                text = doc.get('content') or doc.get('text') or ''
+                
+                # If no text in documents table, try to get from chunks
+                if not text and doc_id:
+                    try:
+                        chunks_result = supabase_client.table('chunks').select('content').eq('document_id', doc_id).execute()
+                        if chunks_result.data:
+                            text = ' '.join([chunk.get('content', '') for chunk in chunks_result.data])
+                    except:
+                        pass
+                
+                normalized.append({
+                    'doc_id': str(doc_id),
+                    'filename': doc.get('filename') or doc.get('title') or doc.get('name') or 'Unknown',
+                    'text': text[:50000],  # Limit for safety
+                    'total_pages': doc.get('pages') or doc.get('total_pages') or 0,
+                    'total_characters': len(text),
+                    'uploaded_at': doc.get('created_at') or doc.get('uploaded_at') or datetime.utcnow().isoformat()
+                })
+            return normalized
+        else:
+            print(f"⚠️ Table '{table_name}' is empty or has no data attribute")
+    except Exception as e:
+        print(f"❌ Failed to read from {table_name}: {e}")
     
-    print("⚠️ No documents found in any Supabase table")
+    print("⚠️ No documents found in Supabase")
     return []
 
 def save_document_to_supabase(doc_data):
-    """Save document to Supabase with auto-detection"""
+    """Save document to Supabase using your actual schema"""
     if not supabase_client:
         return False
     
-    # Try different table names
-    for table_name in ['documents', 'document', 'docs']:
-        try:
-            result = supabase_client.table(table_name).insert(doc_data).execute()
-            print(f"✅ Document saved to Supabase table: {table_name}")
-            return True
-        except Exception as e:
-            print(f"Failed to save to {table_name}: {e}")
-    
-    # If all fail, try to create the table
     try:
-        # This would need proper SQL, simplified here
-        print("⚠️ No suitable table found in Supabase")
-    except:
-        pass
+        # Adapt data for your schema
+        document_record = {
+            'filename': doc_data.get('filename'),
+            'pages': doc_data.get('total_pages', 0),
+            # Add other fields that exist in your documents table
+        }
+        
+        # Insert into documents table
+        result = supabase_client.table('documents').insert(document_record).execute()
+        
+        if result.data and len(result.data) > 0:
+            document_id = result.data[0]['id']  # Get the inserted document ID
+            
+            # Split text into chunks and save to chunks table
+            text = doc_data.get('text', '')
+            if text:
+                chunk_size = 3000
+                chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+                
+                for i, chunk_text in enumerate(chunks):
+                    chunk_record = {
+                        'document_id': document_id,
+                        'content': chunk_text,
+                        'chunk_index': i
+                    }
+                    supabase_client.table('chunks').insert(chunk_record).execute()
+            
+            print(f"✅ Document saved to Supabase with {len(chunks) if text else 0} chunks")
+            return True
+            
+    except Exception as e:
+        print(f"❌ Failed to save to Supabase: {e}")
     
     return False
 
