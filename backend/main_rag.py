@@ -114,45 +114,61 @@ async def create_embeddings_table():
 
 async def store_document_simple(doc_id: str, filename: str, text: str, total_pages: int):
     """Store document in Supabase without embeddings for now"""
-    if not USE_SUPABASE:
+    if not USE_SUPABASE or not supabase_client:
+        print("⚠️ Supabase not available for storage")
         return False
     
     try:
+        print(f"📝 Attempting to store {filename} with {len(text)} chars, {total_pages} pages")
+        
         # Store document metadata in old table structure for compatibility
-        doc_result = supabase_client.table('documents').insert({
+        doc_data = {
             'filename': filename,
             'pages': total_pages
-        }).execute()
+        }
+        print(f"📄 Inserting document: {doc_data}")
+        
+        doc_result = supabase_client.table('documents').insert(doc_data).execute()
+        print(f"📄 Document insert result: {doc_result}")
         
         if not doc_result.data:
-            raise Exception("Failed to store document")
+            raise Exception(f"Document insert returned no data: {doc_result}")
         
         stored_doc_id = doc_result.data[0]['id']
+        print(f"✅ Document stored with ID: {stored_doc_id}")
         
         # Store text chunks in chunks table
         chunk_size = 3000  # Simple chunking for now
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+        print(f"📝 Split into {len(chunks)} chunks")
         
-        chunks_data = []
-        for i, chunk_text in enumerate(chunks):
-            chunk_record = {
-                'document_id': stored_doc_id,
-                'content': chunk_text,
-                'chunk_index': i
-            }
-            chunks_data.append(chunk_record)
-        
-        # Insert chunks
-        if chunks_data:
+        if chunks:
+            chunks_data = []
+            for i, chunk_text in enumerate(chunks):
+                chunk_record = {
+                    'document_id': stored_doc_id,
+                    'content': chunk_text,
+                    'chunk_index': i
+                }
+                chunks_data.append(chunk_record)
+            
+            print(f"📝 Inserting {len(chunks_data)} chunks")
             chunks_result = supabase_client.table('chunks').insert(chunks_data).execute()
+            print(f"📝 Chunks insert result: {chunks_result}")
+            
             if chunks_result.data:
                 print(f"✅ Stored {len(chunks_result.data)} chunks for {filename}")
                 return True
+            else:
+                print(f"⚠️ Chunks insert returned no data: {chunks_result}")
         
         return True
             
     except Exception as e:
-        print(f"❌ Error storing document: {e}")
+        print(f"❌ Detailed error storing document: {e}")
+        print(f"❌ Error type: {type(e)}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
         return False
 
 async def search_similar_chunks(query: str, doc_id: str = None, k: int = SIMILARITY_TOP_K) -> List[Dict]:
@@ -382,12 +398,13 @@ async def upload_pdf(file: UploadFile = File(...)):
         doc_id = file.filename.replace('.pdf', '').replace(' ', '_')
         
         # Store in Supabase if available
+        supabase_success = False
         if USE_SUPABASE:
-            success = await store_document_simple(
+            supabase_success = await store_document_simple(
                 doc_id, file.filename, full_text, len(pdf_reader.pages)
             )
-            if not success:
-                raise HTTPException(500, "Failed to store document in Supabase")
+            if not supabase_success:
+                print(f"⚠️ Supabase storage failed for {file.filename}, but continuing with local storage")
         
         # Store in memory for compatibility
         document_storage[doc_id] = {
@@ -407,8 +424,9 @@ async def upload_pdf(file: UploadFile = File(...)):
             "filename": file.filename,
             "total_pages": len(pdf_reader.pages),
             "total_characters": len(full_text),
-            "embeddings_enabled": USE_SUPABASE,
-            "message": f"Successfully processed {len(pdf_reader.pages)} pages with RAG embeddings"
+            "stored_in_supabase": supabase_success,
+            "embeddings_enabled": False,  # Temporarily disabled
+            "message": f"Successfully processed {len(pdf_reader.pages)} pages. Supabase storage: {'✅' if supabase_success else '❌'}"
         }
         
     except PyPDF2.errors.PdfReadError:
