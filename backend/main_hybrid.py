@@ -42,7 +42,7 @@ USE_SUPABASE = os.getenv("USE_SUPABASE", "false").lower() == "true"
 
 # Storage configuration
 STORAGE_FILE = "document_storage.pkl"
-USE_PRODUCTION_STORAGE = os.getenv("ENVIRONMENT") == "production" and SUPABASE_URL and SUPABASE_KEY
+USE_PRODUCTION_STORAGE = os.getenv("ENVIRONMENT") == "production" and bool(SUPABASE_URL) and bool(SUPABASE_KEY)
 
 # Initialize Supabase client if available
 supabase_client = None
@@ -188,7 +188,7 @@ async def health_check():
         "storage_file_exists": pathlib.Path(STORAGE_FILE).exists(),
         "supabase_tables": supabase_tables,
         "environment": os.getenv("ENVIRONMENT", "development"),
-        "use_production_storage": USE_PRODUCTION_STORAGE
+        "use_production_storage": bool(USE_PRODUCTION_STORAGE)
     }
 
 @app.post("/upload")
