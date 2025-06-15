@@ -112,66 +112,47 @@ async def create_embeddings_table():
         except:
             return False
 
-async def store_document_with_embeddings(doc_id: str, filename: str, text: str, total_pages: int):
-    """Store document with embeddings in Supabase"""
+async def store_document_simple(doc_id: str, filename: str, text: str, total_pages: int):
+    """Store document in Supabase without embeddings for now"""
     if not USE_SUPABASE:
         return False
     
     try:
-        # 1. Store document metadata
+        # Store document metadata in old table structure for compatibility
         doc_result = supabase_client.table('documents').insert({
             'filename': filename,
-            'text': text[:50000],  # Store preview only to save space
-            'total_pages': total_pages,
-            'total_characters': len(text)
+            'pages': total_pages
         }).execute()
         
         if not doc_result.data:
             raise Exception("Failed to store document")
         
-        stored_doc_id = doc_result.data[0]['doc_id']
+        stored_doc_id = doc_result.data[0]['id']
         
-        # 2. Split text into chunks
-        splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            encoding_name="cl100k_base"
-        )
-        chunks = splitter.split_text(text)
-        print(f"📝 Split into {len(chunks)} chunks of ~{CHUNK_SIZE} tokens each")
+        # Store text chunks in chunks table
+        chunk_size = 3000  # Simple chunking for now
+        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
         
-        # 3. Generate embeddings and store chunks
-        embeddings_data = []
-        for i, chunk in enumerate(chunks):
-            # Generate embedding
-            embedding_vector = embeddings.embed_query(chunk)
-            
-            # Prepare data for Supabase
-            chunk_data = {
-                'doc_id': stored_doc_id,
-                'content': chunk,
-                'embedding': embedding_vector,
-                'metadata': {
-                    'doc_id': doc_id,
-                    'chunk_id': i,
-                    'filename': filename,
-                    'total_chunks': len(chunks),
-                    'tokens': count_tokens_precise(chunk)
-                }
+        chunks_data = []
+        for i, chunk_text in enumerate(chunks):
+            chunk_record = {
+                'document_id': stored_doc_id,
+                'content': chunk_text,
+                'chunk_index': i
             }
-            embeddings_data.append(chunk_data)
+            chunks_data.append(chunk_record)
         
-        # Batch insert embeddings
-        embeddings_result = supabase_client.table('document_embeddings').insert(embeddings_data).execute()
+        # Insert chunks
+        if chunks_data:
+            chunks_result = supabase_client.table('chunks').insert(chunks_data).execute()
+            if chunks_result.data:
+                print(f"✅ Stored {len(chunks_result.data)} chunks for {filename}")
+                return True
         
-        if embeddings_result.data:
-            print(f"✅ Stored {len(embeddings_result.data)} embeddings for {filename}")
-            return True
-        else:
-            raise Exception("Failed to store embeddings")
+        return True
             
     except Exception as e:
-        print(f"❌ Error storing document with embeddings: {e}")
+        print(f"❌ Error storing document: {e}")
         return False
 
 async def search_similar_chunks(query: str, doc_id: str = None, k: int = SIMILARITY_TOP_K) -> List[Dict]:
@@ -289,15 +270,25 @@ async def load_documents_from_supabase():
         if result.data:
             for doc in result.data:
                 doc_id = doc['filename'].replace('.pdf', '').replace(' ', '_')
+                
+                # Get text from chunks if it exists
+                text = ''
+                try:
+                    chunks_result = supabase_client.table('chunks').select('content').eq('document_id', doc.get('id')).order('chunk_index').execute()
+                    if chunks_result.data:
+                        text = ' '.join([chunk.get('content', '') for chunk in chunks_result.data])
+                except:
+                    pass
+                
                 document_storage[doc_id] = {
                     'doc_id': doc_id,
                     'filename': doc['filename'],
-                    'text': doc.get('text', ''),
-                    'total_pages': doc.get('total_pages', 0),
-                    'total_characters': doc.get('total_characters', 0),
+                    'text': text,
+                    'total_pages': doc.get('pages', 0),
+                    'total_characters': len(text),
                     'uploaded_at': time.time()
                 }
-            print(f"📚 Loaded {len(document_storage)} documents for compatibility")
+            print(f"📚 Loaded {len(document_storage)} documents with content from chunks")
     except Exception as e:
         print(f"⚠️ Failed to load documents: {e}")
 
@@ -390,13 +381,13 @@ async def upload_pdf(file: UploadFile = File(...)):
         full_text = "\n\n".join(text_parts)
         doc_id = file.filename.replace('.pdf', '').replace(' ', '_')
         
-        # Store with embeddings if available
+        # Store in Supabase if available
         if USE_SUPABASE:
-            success = await store_document_with_embeddings(
+            success = await store_document_simple(
                 doc_id, file.filename, full_text, len(pdf_reader.pages)
             )
             if not success:
-                raise HTTPException(500, "Failed to store document with embeddings")
+                raise HTTPException(500, "Failed to store document in Supabase")
         
         # Store in memory for compatibility
         document_storage[doc_id] = {
