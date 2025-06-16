@@ -15,6 +15,16 @@ import requests
 from supabase import create_client
 import tiktoken
 
+# Check if PyMuPDF is available
+try:
+    import fitz
+    PYMUPDF_AVAILABLE = True
+    print("✅ PyMuPDF (fitz) loaded successfully")
+except ImportError as e:
+    PYMUPDF_AVAILABLE = False
+    print(f"⚠️ PyMuPDF not available: {e}")
+    print("⚠️ Will use PyPDF2 only")
+
 load_dotenv()
 
 app = FastAPI(title="RAG Platform API", version="5.0-PRODUCTION")
@@ -60,58 +70,67 @@ if SUPABASE_URL and SUPABASE_KEY:
 def extract_text_from_pdf(content: bytes) -> tuple[str, int]:
     """Extract text from PDF using PyMuPDF (superior) and PyPDF2 fallback"""
     
+    print(f"🔍 Starting PDF extraction with {len(content)} bytes")
+    
     # Method 1: Try PyMuPDF first (best for complex PDFs)
-    try:
-        doc = fitz.open(stream=content, filetype="pdf")
-        page_count = len(doc)
-        print(f"📄 PyMuPDF: Found {page_count} pages")
-        
-        text_parts = []
-        total_chars = 0
-        
-        for page_num in range(page_count):
-            page = doc.load_page(page_num)
+    if PYMUPDF_AVAILABLE:
+        try:
+            print("🚀 Attempting PyMuPDF extraction...")
+            doc = fitz.open(stream=content, filetype="pdf")
+            page_count = len(doc)
+            print(f"📄 PyMuPDF: Found {page_count} pages")
             
-            # Extract text with PyMuPDF (handles complex layouts better)
-            page_text = page.get_text()
+            text_parts = []
+            total_chars = 0
             
-            # Try different extraction methods if standard fails
-            if not page_text or len(page_text.strip()) < 10:
-                # Try layout-preserving extraction
-                page_text = page.get_text("text")
-                
-            if not page_text or len(page_text.strip()) < 10:
-                # Try block-based extraction
-                blocks = page.get_text("blocks")
-                page_text = "\n".join([block[4] for block in blocks if len(block) > 4])
+            for page_num in range(min(page_count, 50)):  # Limit pages for stability
+                try:
+                    page = doc.load_page(page_num)
+                    
+                    # Extract text with PyMuPDF (handles complex layouts better)
+                    page_text = page.get_text()
+                    
+                    # Try different extraction methods if standard fails
+                    if not page_text or len(page_text.strip()) < 10:
+                        page_text = page.get_text("text")
+                        
+                    if not page_text or len(page_text.strip()) < 10:
+                        blocks = page.get_text("blocks")
+                        page_text = "\n".join([block[4] for block in blocks if len(block) > 4 and isinstance(block[4], str)])
+                    
+                    if page_text and page_text.strip():
+                        clean_text = page_text.strip()
+                        # Clean up excessive whitespace but preserve structure
+                        import re
+                        clean_text = re.sub(r'\n\s*\n', '\n\n', clean_text)
+                        clean_text = re.sub(r' +', ' ', clean_text)
+                        
+                        text_parts.append(f"[PAGE {page_num + 1}]\n{clean_text}")
+                        total_chars += len(clean_text)
+                        print(f"📄 Page {page_num + 1}: {len(clean_text)} characters extracted")
+                    else:
+                        print(f"⚠️ Page {page_num + 1}: No text found")
+                except Exception as e:
+                    print(f"❌ Error processing page {page_num + 1}: {e}")
+                    continue
             
-            if page_text and page_text.strip():
-                clean_text = page_text.strip()
-                # Clean up excessive whitespace but preserve structure
-                import re
-                clean_text = re.sub(r'\n\s*\n', '\n\n', clean_text)
-                clean_text = re.sub(r' +', ' ', clean_text)
-                
-                text_parts.append(f"[PAGE {page_num + 1}]\n{clean_text}")
-                total_chars += len(clean_text)
-                print(f"📄 Page {page_num + 1}: {len(clean_text)} characters extracted")
+            doc.close()
+            
+            if text_parts and total_chars > 100:
+                full_text = "\n\n".join(text_parts)
+                print(f"✅ PyMuPDF SUCCESS: extracted {total_chars} characters from {len(text_parts)} pages")
+                return full_text, page_count
             else:
-                print(f"⚠️ Page {page_num + 1}: No text found")
+                print(f"⚠️ PyMuPDF found insufficient text ({total_chars} chars), trying PyPDF2...")
         
-        doc.close()
-        
-        if text_parts and total_chars > 100:  # Require substantial text
-            full_text = "\n\n".join(text_parts)
-            print(f"✅ PyMuPDF extracted {total_chars} characters from {len(text_parts)} pages")
-            return full_text, page_count
-        else:
-            print(f"⚠️ PyMuPDF found insufficient text ({total_chars} chars), trying PyPDF2...")
+        except Exception as e:
+            print(f"❌ PyMuPDF completely failed: {e}")
+    else:
+        print("⚠️ PyMuPDF not available, using PyPDF2...")
     
-    except Exception as e:
-        print(f"⚠️ PyMuPDF failed: {e}, trying PyPDF2...")
-    
-    # Method 2: Fallback to PyPDF2
+    # Method 2: Fallback to PyPDF2 with enhanced extraction
     try:
+        print("🚀 Attempting PyPDF2 extraction...")
         pdf_reader = PyPDF2.PdfReader(BytesIO(content))
         pages = len(pdf_reader.pages)
         print(f"📄 PyPDF2: Found {pages} pages")
@@ -119,30 +138,45 @@ def extract_text_from_pdf(content: bytes) -> tuple[str, int]:
         text_parts = []
         total_chars = 0
         
-        for i, page in enumerate(pdf_reader.pages):
+        for i, page in enumerate(pdf_reader.pages[:50]):  # Limit pages
             try:
+                # Try multiple PyPDF2 extraction methods
                 page_text = page.extract_text()
+                
+                # Try alternative extraction if first fails
+                if not page_text or len(page_text.strip()) < 10:
+                    try:
+                        # Alternative extraction method
+                        if hasattr(page, 'extractText'):
+                            page_text = page.extractText()
+                    except:
+                        pass
+                
                 if page_text and page_text.strip():
                     clean_text = page_text.strip()
                     text_parts.append(f"[PAGE {i+1}]\n{clean_text}")
                     total_chars += len(clean_text)
                     print(f"📄 Page {i+1}: {len(clean_text)} characters")
+                else:
+                    print(f"⚠️ Page {i+1}: No text extracted")
+                    
             except Exception as e:
-                print(f"⚠️ Page {i+1} failed: {e}")
+                print(f"❌ Page {i+1} error: {e}")
                 continue
         
-        if text_parts and total_chars > 50:
+        if text_parts and total_chars > 20:  # Lower threshold for PyPDF2
             full_text = "\n\n".join(text_parts)
-            print(f"✅ PyPDF2 extracted {total_chars} characters from {len(text_parts)} pages")
+            print(f"✅ PyPDF2 SUCCESS: extracted {total_chars} characters from {len(text_parts)} pages")
             return full_text, pages
         else:
-            print(f"⚠️ PyPDF2 found insufficient text ({total_chars} chars)")
+            print(f"❌ PyPDF2 insufficient text: {total_chars} chars from {len(text_parts)} pages")
     
     except Exception as e:
-        print(f"❌ PyPDF2 also failed: {e}")
+        print(f"❌ PyPDF2 completely failed: {e}")
     
-    # If both methods fail
-    raise Exception(f"Could not extract sufficient text from PDF. The document may be image-based or corrupted. Please ensure the PDF contains selectable text.")
+    # If both methods fail completely
+    print("❌ BOTH extraction methods failed completely")
+    raise Exception(f"Could not extract any text from PDF using PyMuPDF or PyPDF2. PDF may be image-based, corrupted, or password-protected.")
 
 def simple_chunk_text(text: str, chunk_size: int = CHUNK_SIZE * 4) -> List[str]:
     """Simple text chunking - approximating tokens as 4 chars"""
