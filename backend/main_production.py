@@ -232,10 +232,35 @@ async def upload_pdf(file: UploadFile = File(...)):
                     if chunks_data:
                         supabase_client.table('chunks').insert(chunks_data).execute()
                     
-                    # Store embeddings if we want to enable them
-                    if False:  # Temporarily disabled for stability
-                        # Generate and store embeddings
-                        pass
+                    # Store embeddings 
+                    try:
+                        # Check if embeddings table exists
+                        embeddings_result = supabase_client.table('document_embeddings').select('id').limit(1).execute()
+                        
+                        # Generate and store embeddings for each chunk
+                        embeddings_data = []
+                        for i, chunk in enumerate(chunks[:20]):  # Limit to 20 chunks for now
+                            try:
+                                embedding = generate_embedding(chunk[:2000])  # Limit text size
+                                embeddings_data.append({
+                                    'doc_id': doc_uuid,
+                                    'content': chunk,
+                                    'embedding': embedding,
+                                    'metadata': {
+                                        'doc_id': doc_id,
+                                        'chunk_id': i,
+                                        'filename': file.filename
+                                    }
+                                })
+                            except Exception as e:
+                                print(f"Embedding generation error: {e}")
+                                continue
+                        
+                        if embeddings_data:
+                            supabase_client.table('document_embeddings').insert(embeddings_data).execute()
+                            print(f"✅ Stored {len(embeddings_data)} embeddings")
+                    except Exception as e:
+                        print(f"Embeddings storage error: {e}")
                     
                     supabase_success = True
                     print(f"✅ Stored in Supabase: {file.filename}")
@@ -299,8 +324,41 @@ async def ask_question(doc_id: str, q: str):
         doc = document_storage[doc_id]
         text = doc["text"]
         
-        # Use first 8000 chars for context
-        context = text[:8000] if len(text) > 8000 else text
+        # Try vector search first if available
+        context = ""
+        sources = []
+        
+        if supabase_client and OPENAI_API_KEY:
+            try:
+                # Generate query embedding
+                query_embedding = generate_embedding(q)
+                
+                # Search similar chunks using RPC function
+                result = supabase_client.rpc('match_documents', {
+                    'query_embedding': query_embedding,
+                    'filter_doc_id': doc_id,
+                    'match_threshold': 0.3,
+                    'match_count': 6
+                }).execute()
+                
+                if result.data and len(result.data) > 0:
+                    # Use similar chunks as context
+                    context_parts = []
+                    for chunk in result.data:
+                        context_parts.append(chunk['content'])
+                        sources.append({
+                            'chunk_id': chunk['metadata'].get('chunk_id', 0),
+                            'similarity': chunk.get('similarity', 0)
+                        })
+                    context = "\n\n".join(context_parts)
+                    print(f"✅ Found {len(result.data)} similar chunks")
+            except Exception as e:
+                print(f"Vector search error: {e}")
+        
+        # Fallback to simple text if vector search fails
+        if not context:
+            context = text[:8000] if len(text) > 8000 else text
+            sources = [{"text": "Full document context"}]
         
         messages = [
             {
@@ -318,8 +376,9 @@ async def ask_question(doc_id: str, q: str):
         return {
             "answer": answer,
             "doc_id": doc_id,
-            "confidence": 0.8,
-            "sources": [{"text": "Document context"}]
+            "confidence": min(0.95, 0.7 + len(sources) * 0.05) if sources else 0.7,
+            "sources": sources,
+            "vector_search_used": len(sources) > 1
         }
         
     except Exception as e:
