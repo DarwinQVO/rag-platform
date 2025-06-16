@@ -2,7 +2,7 @@
 cmds = ["cd backend && pip install -r requirements.txt"]
 
 [phases.start]
-cmd = "uvicorn backend.main_rag_complete:app --host 0.0.0.0 --port $PORT"
+cmd = "uvicorn backend.main_production:app --host 0.0.0.0 --port $PORT"
 
 [variables]
 PYTHONPATH = "/app/backend"
