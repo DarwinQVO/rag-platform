@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 import PyPDF2
+import fitz  # PyMuPDF - much better for text extraction
 from io import BytesIO
 import requests
 
@@ -57,74 +58,91 @@ if SUPABASE_URL and SUPABASE_KEY:
         print(f"⚠️ Supabase connection failed: {e}")
 
 def extract_text_from_pdf(content: bytes) -> tuple[str, int]:
-    """Extract text from PDF using multiple methods"""
+    """Extract text from PDF using PyMuPDF (superior) and PyPDF2 fallback"""
+    
+    # Method 1: Try PyMuPDF first (best for complex PDFs)
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        page_count = len(doc)
+        print(f"📄 PyMuPDF: Found {page_count} pages")
+        
+        text_parts = []
+        total_chars = 0
+        
+        for page_num in range(page_count):
+            page = doc.load_page(page_num)
+            
+            # Extract text with PyMuPDF (handles complex layouts better)
+            page_text = page.get_text()
+            
+            # Try different extraction methods if standard fails
+            if not page_text or len(page_text.strip()) < 10:
+                # Try layout-preserving extraction
+                page_text = page.get_text("text")
+                
+            if not page_text or len(page_text.strip()) < 10:
+                # Try block-based extraction
+                blocks = page.get_text("blocks")
+                page_text = "\n".join([block[4] for block in blocks if len(block) > 4])
+            
+            if page_text and page_text.strip():
+                clean_text = page_text.strip()
+                # Clean up excessive whitespace but preserve structure
+                import re
+                clean_text = re.sub(r'\n\s*\n', '\n\n', clean_text)
+                clean_text = re.sub(r' +', ' ', clean_text)
+                
+                text_parts.append(f"[PAGE {page_num + 1}]\n{clean_text}")
+                total_chars += len(clean_text)
+                print(f"📄 Page {page_num + 1}: {len(clean_text)} characters extracted")
+            else:
+                print(f"⚠️ Page {page_num + 1}: No text found")
+        
+        doc.close()
+        
+        if text_parts and total_chars > 100:  # Require substantial text
+            full_text = "\n\n".join(text_parts)
+            print(f"✅ PyMuPDF extracted {total_chars} characters from {len(text_parts)} pages")
+            return full_text, page_count
+        else:
+            print(f"⚠️ PyMuPDF found insufficient text ({total_chars} chars), trying PyPDF2...")
+    
+    except Exception as e:
+        print(f"⚠️ PyMuPDF failed: {e}, trying PyPDF2...")
+    
+    # Method 2: Fallback to PyPDF2
     try:
         pdf_reader = PyPDF2.PdfReader(BytesIO(content))
         pages = len(pdf_reader.pages)
-        print(f"📄 PDF has {pages} pages")
+        print(f"📄 PyPDF2: Found {pages} pages")
         
         text_parts = []
         total_chars = 0
         
         for i, page in enumerate(pdf_reader.pages):
-            page_text = ""
-            
             try:
-                # Method 1: Standard extraction
                 page_text = page.extract_text()
-                print(f"📄 Page {i+1} standard: {len(page_text)} chars")
+                if page_text and page_text.strip():
+                    clean_text = page_text.strip()
+                    text_parts.append(f"[PAGE {i+1}]\n{clean_text}")
+                    total_chars += len(clean_text)
+                    print(f"📄 Page {i+1}: {len(clean_text)} characters")
             except Exception as e:
-                print(f"⚠️ Page {i+1} standard extraction failed: {e}")
-            
-            # Method 2: Try alternative extraction if standard fails
-            if not page_text or len(page_text.strip()) < 20:
-                try:
-                    # Try to get content streams
-                    if hasattr(page, 'get_contents') and page.get_contents():
-                        raw_content = str(page.get_contents())
-                        # Extract readable text from raw content
-                        import re
-                        text_matches = re.findall(r'\((.*?)\)', raw_content)
-                        if text_matches:
-                            page_text = ' '.join(text_matches)
-                            print(f"📄 Page {i+1} alternative: {len(page_text)} chars")
-                except Exception as e:
-                    print(f"⚠️ Page {i+1} alternative extraction failed: {e}")
-            
-            # Method 3: If still no text, check if it's an image-based page
-            if not page_text or len(page_text.strip()) < 20:
-                try:
-                    # Check for images on the page
-                    if hasattr(page, 'images') or '/XObject' in str(page):
-                        page_text = f"[PAGE {i+1} - IMAGE-BASED CONTENT DETECTED]"
-                        print(f"📄 Page {i+1}: Image-based content detected")
-                except:
-                    page_text = f"[PAGE {i+1} - NO TEXT EXTRACTED]"
-                    print(f"📄 Page {i+1}: No text could be extracted")
-            
-            if page_text and page_text.strip():
-                clean_text = page_text.strip()
-                text_parts.append(f"[PAGE {i+1}]\n{clean_text}")
-                total_chars += len(clean_text)
+                print(f"⚠️ Page {i+1} failed: {e}")
+                continue
         
-        print(f"📊 Extraction summary: {len(text_parts)} pages with text, {total_chars} total characters")
-        
-        if text_parts:
+        if text_parts and total_chars > 50:
             full_text = "\n\n".join(text_parts)
+            print(f"✅ PyPDF2 extracted {total_chars} characters from {len(text_parts)} pages")
+            return full_text, pages
         else:
-            # If absolutely no text, create meaningful placeholder
-            full_text = f"""[DOCUMENT: {pages} pages]
-[STATUS: This appears to be an image-based or scanned PDF]
-[RECOMMENDATION: This document may require OCR (Optical Character Recognition) to extract text]
-[PAGES PROCESSED: {pages}]
-[NOTE: You may need to use a different PDF or convert this to a text-based PDF]"""
-        
-        print(f"✅ Final extraction: {len(full_text)} characters")
-        return full_text, pages
-        
+            print(f"⚠️ PyPDF2 found insufficient text ({total_chars} chars)")
+    
     except Exception as e:
-        print(f"❌ PDF extraction error: {e}")
-        raise
+        print(f"❌ PyPDF2 also failed: {e}")
+    
+    # If both methods fail
+    raise Exception(f"Could not extract sufficient text from PDF. The document may be image-based or corrupted. Please ensure the PDF contains selectable text.")
 
 def simple_chunk_text(text: str, chunk_size: int = CHUNK_SIZE * 4) -> List[str]:
     """Simple text chunking - approximating tokens as 4 chars"""
@@ -249,14 +267,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         content = await file.read()
         full_text, page_count = extract_text_from_pdf(content)
         
-        if not full_text or len(full_text.strip()) < 20:
-            raise HTTPException(400, "Could not extract text from PDF")
-        
         print(f"📊 Extracted text preview: {full_text[:200]}...")
-        
-        # Check if it's mostly placeholder text
-        if "[STATUS: This appears to be an image-based" in full_text:
-            print("⚠️ WARNING: PDF appears to be image-based or scanned")
+        print(f"📊 Total characters extracted: {len(full_text)}")
         
         # Create chunks
         chunks = simple_chunk_text(full_text)
